@@ -186,7 +186,7 @@ export function makeBot(token: string): Bot {
     const syms = findSymbols(text);
     const cos = findCompanies(text);
     const faq = matchFaq(text);
-    const strongFaq = !!faq && /手数料|入金|出金|ログイン|取引時間|何時|レバレッジ|預け/.test(text);
+    const strongFaq = !!faq && /手数料|入金|出金|ログイン|取引時間|何時|レバレッジ|預け|届かない|反映|送った|送金|ネットワーク|チェーン|ガス|日本円|カード|usdt|usdc/i.test(text);
     if (!strongFaq && (syms.length || cos.length)) {
       await ctx.replyWithChatAction('typing').catch(() => null);
       if (cos.length && (wantsCompanyInfo(text) || !syms.length)) { if (await sendCompany(ctx, cos[0])) return; }

@@ -44,6 +44,7 @@ export const ALIASES: Array<[Array<string | RegExp>, string[]]> = [
   [['コストコ', 'costco'], ['COST']],
   [['スペースx', 'spacex', 'スペースエックス'], ['SPCX', 'SPACEX']],
   [['オープンai', 'openai'], ['OPENAI', 'OAI']],
+  [['アンソロピック', 'anthropic'], ['ANTH', 'ANT']],
   [['ユニツリー', 'unitree'], ['UNITREE']],
   [['ハイニックス', 'hynix'], ['SKHY', 'SKHX']],
   [['サムスン', 'samsung'], ['SMSN', 'SAMSUNG']],
