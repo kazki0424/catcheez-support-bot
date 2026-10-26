@@ -6,7 +6,8 @@ import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { WELCOME, MENU, GUIDES, FAQ, HUMAN_INTRO, HUMAN_ACK, AI_OFF_MSG, PRICE_HELP, PRICE_NOTE, X_URL, APP_URL, FLOW_URL } from './content.js';
-import { warmPrices, quote, findSymbols, quoteText, marketText } from './prices.js';
+import { warmPrices, quote, findSymbols, quoteText, marketText, fmtPrice } from './prices.js';
+import { COMPANIES, findCompanies, companyFor, wantsCompanyInfo } from './companies.js';
 import { askAi, AI_ON } from './ai.js';
 
 const TOKEN = (process.env.TELEGRAM_BOT_TOKEN ?? '').trim();
@@ -76,12 +77,41 @@ export function makeBot(token: string): Bot {
     return best?.f ?? null;
   }
 
-  const priceKb = () => backKb([{ label: '📊 いまの値動き', key: 'market' }, { label: '取引画面を開く', url: `${APP_URL}/trade` }]);
+  const priceKb = (companyKey?: string) => {
+    const kb = new InlineKeyboard();
+    if (companyKey) kb.text('🏢 この会社について', 'co:' + companyKey);
+    kb.text('📊 いまの値動き', 'menu:market').url('取引画面を開く', `${APP_URL}/trade`).row().text('« メニューに戻る', 'menu:home');
+    return kb;
+  };
   async function sendQuotes(ctx: Context, symbols: string[]): Promise<boolean> {
-    const parts: string[] = [];
-    for (const s of symbols) { const q = await quote(s).catch(() => null); if (q) parts.push(quoteText(q)); }
+    const parts: string[] = []; let companyKey: string | undefined;
+    for (const s of symbols) {
+      const q = await quote(s).catch(() => null);
+      if (!q) continue;
+      parts.push(quoteText(q));
+      if (!companyKey) companyKey = companyFor(q.symbol)?.key;
+    }
     if (!parts.length) return false;
-    await ctx.reply(parts.join('\n\n') + '\n\n' + PRICE_NOTE, { parse_mode: 'HTML', reply_markup: priceKb(), link_preview_options: { is_disabled: true } });
+    await ctx.reply(parts.join('\n\n') + '\n\n' + PRICE_NOTE, { parse_mode: 'HTML', reply_markup: priceKb(companyKey), link_preview_options: { is_disabled: true } });
+    return true;
+  }
+  // 企業の説明(辞書) + いまの価格を1行
+  async function sendCompany(ctx: Context, key: string): Promise<boolean> {
+    const c = COMPANIES[key]; if (!c) return false;
+    let q = await quote(key).catch(() => null);
+    for (const s of c.syms ?? []) { if (q) break; q = await quote(s).catch(() => null); }
+    const kb = new InlineKeyboard();
+    let tail: string;
+    if (q) {
+      const sign = q.changePct > 0 ? '+' : '';
+      tail = `\n\n${q.changePct >= 0 ? '📈' : '📉'} いまの価格: <b>$${fmtPrice(q.mark)}</b>（24時間 ${sign}${q.changePct.toFixed(2)}%）`;
+      kb.text('📈 くわしい価格', 'q:' + q.symbol).url('取引画面を開く', `${APP_URL}/trade`).row();
+    } else {
+      tail = '\n\n<i>この銘柄は、いまCATCHEEZの取引一覧には見つかりませんでした。</i>';
+      kb.text('📊 いまの値動き', 'menu:market').row();
+    }
+    kb.text('« メニューに戻る', 'menu:home');
+    await ctx.reply(`🏢 <b>${c.name}</b>\n\n${c.desc}${tail}\n\n${PRICE_NOTE}`, { parse_mode: 'HTML', reply_markup: kb, link_preview_options: { is_disabled: true } });
     return true;
   }
   async function sendMarket(ctx: Context): Promise<void> {
@@ -100,6 +130,11 @@ export function makeBot(token: string): Bot {
   bot.command('copy', (ctx) => sendGuide(ctx, 'copy'));
   bot.command('flow', (ctx) => sendGuide(ctx, 'flow'));
   bot.command('market', (ctx) => sendMarket(ctx));
+  bot.command(['company', 'co'], async (ctx) => {
+    const arg = (ctx.match ?? '').toString().trim();
+    const cos = arg ? findCompanies(arg) : [];
+    if (!cos.length || !(await sendCompany(ctx, cos[0]))) await ctx.reply('企業名か銘柄コードを送ってください。例: <b>ソフトバンク</b>、<b>NVDA</b>、<b>キオクシア</b>', { parse_mode: 'HTML', reply_markup: backKb() });
+  });
   bot.command(['price', 'p'], async (ctx) => {
     const arg = (ctx.match ?? '').toString().trim();
     const syms = arg ? findSymbols(arg) : [];
@@ -127,6 +162,8 @@ export function makeBot(token: string): Bot {
     }
     return sendGuide(ctx, key);
   });
+  bot.callbackQuery(/^co:(.+)$/, async (ctx) => { await ctx.answerCallbackQuery(); if (!(await sendCompany(ctx, ctx.match[1]))) await sendHome(ctx); });
+  bot.callbackQuery(/^q:(.+)$/, async (ctx) => { await ctx.answerCallbackQuery(); if (!(await sendQuotes(ctx, [ctx.match[1]]))) await ctx.reply(PRICE_HELP, { parse_mode: 'HTML', reply_markup: priceKb() }); });
   bot.callbackQuery(/^faq:(\d+)$/, async (ctx) => {
     await ctx.answerCallbackQuery();
     const f = FAQ[Number(ctx.match[1])];
@@ -145,12 +182,16 @@ export function makeBot(token: string): Bot {
       await forwardToAdmin(ctx, text);
       return ctx.reply(HUMAN_ACK, { reply_markup: backKb() });
     }
-    // 銘柄名が入っていたら、価格と24時間の変化を答える(「NVDAの手数料は?」のようにFAQ語が強ければFAQを優先)
+    // 銘柄名・企業名が入っていたら: 「どんな会社?」なら説明、それ以外は価格(「NVDAの手数料は?」のようにFAQ語が強ければFAQを優先)
     const syms = findSymbols(text);
+    const cos = findCompanies(text);
     const faq = matchFaq(text);
-    if (syms.length && !(faq && /手数料|入金|出金|ログイン|取引時間|何時|レバレッジ/.test(text))) {
+    const strongFaq = !!faq && /手数料|入金|出金|ログイン|取引時間|何時|レバレッジ|預け/.test(text);
+    if (!strongFaq && (syms.length || cos.length)) {
       await ctx.replyWithChatAction('typing').catch(() => null);
-      if (await sendQuotes(ctx, syms)) return;
+      if (cos.length && (wantsCompanyInfo(text) || !syms.length)) { if (await sendCompany(ctx, cos[0])) return; }
+      if (syms.length && (await sendQuotes(ctx, syms))) return;
+      if (cos.length && (await sendCompany(ctx, cos[0]))) return;
     }
     if (faq) return ctx.reply('<b>' + faq.q + '</b>\n\n' + faq.a, { parse_mode: 'HTML', reply_markup: backKb([{ label: 'ほかの質問', key: 'faq' }, { label: '人に聞く', key: 'human' }]) });
     await ctx.replyWithChatAction('typing').catch(() => null);
@@ -217,6 +258,7 @@ if (isMain) {
     { command: 'faq', description: 'よくある質問' },
     { command: 'market', description: 'いまの値動き(上昇・下落)' },
     { command: 'price', description: '銘柄の価格 例: /price NVDA' },
+    { command: 'company', description: '企業の説明 例: /company ソフトバンク' },
   ]).catch((e) => console.warn('setMyCommands failed', String(e)));
   console.log('CATCHEEZ support bot starting (AI:', AI_ON ? 'on' : 'off', ', admin:', ADMIN ? 'set' : 'none', ')');
   bot.start({ onStart: (me) => { console.log('polling as @' + me.username); (bot as any).warmVideos().catch(() => null); (bot as any).warmPrices(); } });
