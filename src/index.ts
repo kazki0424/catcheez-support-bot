@@ -5,7 +5,8 @@ import { Bot, InlineKeyboard, InputFile, type Context } from 'grammy';
 import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
-import { WELCOME, MENU, GUIDES, FAQ, HUMAN_INTRO, HUMAN_ACK, AI_OFF_MSG, X_URL, APP_URL, FLOW_URL } from './content.js';
+import { WELCOME, MENU, GUIDES, FAQ, HUMAN_INTRO, HUMAN_ACK, AI_OFF_MSG, PRICE_HELP, PRICE_NOTE, X_URL, APP_URL, FLOW_URL } from './content.js';
+import { warmPrices, quote, findSymbols, quoteText, marketText } from './prices.js';
 import { askAi, AI_ON } from './ai.js';
 
 const TOKEN = (process.env.TELEGRAM_BOT_TOKEN ?? '').trim();
@@ -75,6 +76,20 @@ export function makeBot(token: string): Bot {
     return best?.f ?? null;
   }
 
+  const priceKb = () => backKb([{ label: '📊 いまの値動き', key: 'market' }, { label: '取引画面を開く', url: `${APP_URL}/trade` }]);
+  async function sendQuotes(ctx: Context, symbols: string[]): Promise<boolean> {
+    const parts: string[] = [];
+    for (const s of symbols) { const q = await quote(s).catch(() => null); if (q) parts.push(quoteText(q)); }
+    if (!parts.length) return false;
+    await ctx.reply(parts.join('\n\n') + '\n\n' + PRICE_NOTE, { parse_mode: 'HTML', reply_markup: priceKb(), link_preview_options: { is_disabled: true } });
+    return true;
+  }
+  async function sendMarket(ctx: Context): Promise<void> {
+    await ctx.replyWithChatAction('typing').catch(() => null);
+    const text = await marketText().catch(() => '価格をいま取得できません。少し待ってもう一度お試しください。');
+    await ctx.reply(text + '\n\n' + PRICE_NOTE, { parse_mode: 'HTML', reply_markup: backKb([{ label: '取引画面を開く', url: `${APP_URL}/trade` }]) });
+  }
+
   bot.command('start', (ctx) => sendHome(ctx));
   bot.command('menu', (ctx) => sendHome(ctx));
   bot.command('help', (ctx) => sendHome(ctx));
@@ -82,7 +97,14 @@ export function makeBot(token: string): Bot {
   bot.command('login', (ctx) => sendGuide(ctx, 'login'));
   bot.command('deposit', (ctx) => sendGuide(ctx, 'deposit'));
   bot.command('trade', (ctx) => sendGuide(ctx, 'trade'));
+  bot.command('copy', (ctx) => sendGuide(ctx, 'copy'));
   bot.command('flow', (ctx) => sendGuide(ctx, 'flow'));
+  bot.command('market', (ctx) => sendMarket(ctx));
+  bot.command(['price', 'p'], async (ctx) => {
+    const arg = (ctx.match ?? '').toString().trim();
+    const syms = arg ? findSymbols(arg) : [];
+    if (!syms.length || !(await sendQuotes(ctx, syms))) await ctx.reply(PRICE_HELP, { parse_mode: 'HTML', reply_markup: priceKb() });
+  });
   bot.command('links', (ctx) => ctx.reply(`CATCHEEZ: ${APP_URL}\nFLOW: ${FLOW_URL}\nX: ${X_URL}`));
   // 担当者 → 利用者への返信: /reply <chatId> 本文  (ADMIN_CHAT_ID のチャットからだけ使える)
   bot.command('reply', async (ctx) => {
@@ -98,6 +120,7 @@ export function makeBot(token: string): Bot {
     await ctx.answerCallbackQuery();
     if (key === 'home') return sendHome(ctx);
     if (key === 'faq') return sendFaqList(ctx);
+    if (key === 'market') return sendMarket(ctx);
     if (key === 'human') {
       waitingForHuman.add(String(ctx.from.id));
       return ctx.reply(HUMAN_INTRO, { reply_markup: backKb([{ label: 'X(@CatcheezAsia)を開く', url: X_URL }]) });
@@ -122,7 +145,13 @@ export function makeBot(token: string): Bot {
       await forwardToAdmin(ctx, text);
       return ctx.reply(HUMAN_ACK, { reply_markup: backKb() });
     }
+    // 銘柄名が入っていたら、価格と24時間の変化を答える(「NVDAの手数料は?」のようにFAQ語が強ければFAQを優先)
+    const syms = findSymbols(text);
     const faq = matchFaq(text);
+    if (syms.length && !(faq && /手数料|入金|出金|ログイン|取引時間|何時|レバレッジ/.test(text))) {
+      await ctx.replyWithChatAction('typing').catch(() => null);
+      if (await sendQuotes(ctx, syms)) return;
+    }
     if (faq) return ctx.reply('<b>' + faq.q + '</b>\n\n' + faq.a, { parse_mode: 'HTML', reply_markup: backKb([{ label: 'ほかの質問', key: 'faq' }, { label: '人に聞く', key: 'human' }]) });
     await ctx.replyWithChatAction('typing').catch(() => null);
     const ai = await askAi(uid, text);
@@ -169,6 +198,7 @@ export function makeBot(token: string): Bot {
     }
   }
   (bot as any).warmVideos = warmVideos;
+  (bot as any).warmPrices = () => warmPrices().then((n) => console.log('prices ready:', n, 'symbols')).catch((e) => console.warn('warmPrices failed', String(e)));
   return bot;
 }
 
@@ -182,9 +212,12 @@ if (isMain) {
     { command: 'login', description: 'ログイン・口座開設' },
     { command: 'deposit', description: '入金・出金' },
     { command: 'trade', description: '取引のやり方' },
-    { command: 'flow', description: 'コピートレード(FLOW)' },
+    { command: 'copy', description: '公式コピートレード(アプリ内)' },
+    { command: 'flow', description: 'FLOW(BOTコピー)' },
     { command: 'faq', description: 'よくある質問' },
+    { command: 'market', description: 'いまの値動き(上昇・下落)' },
+    { command: 'price', description: '銘柄の価格 例: /price NVDA' },
   ]).catch((e) => console.warn('setMyCommands failed', String(e)));
   console.log('CATCHEEZ support bot starting (AI:', AI_ON ? 'on' : 'off', ', admin:', ADMIN ? 'set' : 'none', ')');
-  bot.start({ onStart: (me) => { console.log('polling as @' + me.username); (bot as any).warmVideos().catch(() => null); } });
+  bot.start({ onStart: (me) => { console.log('polling as @' + me.username); (bot as any).warmVideos().catch(() => null); (bot as any).warmPrices(); } });
 }
