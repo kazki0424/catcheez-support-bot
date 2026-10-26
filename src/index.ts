@@ -45,8 +45,15 @@ export function makeBot(token: string): Bot {
       if (file && existsSync(file)) {
         // 一度送った動画は Telegram 側の file_id を使い回す(毎回アップロードしない)
         const cached = videoIds.get(p.video!);
-        const sent = await ctx.replyWithVideo(cached ?? new InputFile(file), { caption: p.text, parse_mode: 'HTML', reply_markup: kb });
-        if (!cached && sent?.video?.file_id) videoIds.set(p.video!, sent.video.file_id);
+        if (cached) {
+          await ctx.replyWithVideo(cached, { caption: p.text, parse_mode: 'HTML', reply_markup: kb, supports_streaming: true });
+        } else {
+          // まだアップロードしていない動画: 先に文章を出して、動画は後から送る(待たせない)
+          await ctx.reply(p.text, { parse_mode: 'HTML', reply_markup: kb });
+          await ctx.replyWithChatAction('upload_video').catch(() => null);
+          const sent = await ctx.replyWithVideo(new InputFile(file), { supports_streaming: true }).catch((e) => { console.warn('video send failed', p.video, String(e)); return null; });
+          if (sent?.video?.file_id) videoIds.set(p.video!, sent.video.file_id);
+        }
       } else {
         await ctx.reply(p.text, { parse_mode: 'HTML', reply_markup: kb });
       }
@@ -143,6 +150,25 @@ export function makeBot(token: string): Bot {
   }
 
   bot.catch((err) => { console.error('bot error', err.error); });
+
+  // 起動時に動画を1回だけアップロードしておく(ADMIN_CHAT_ID に音なしで送ってすぐ消す。file_id は残る)。
+  // これで利用者には初回から一瞬で動画が届きます。
+  async function warmVideos(): Promise<void> {
+    if (!ADMIN) { console.log('warmVideos: ADMIN_CHAT_ID が無いので省略(初回だけ動画が遅くなります)'); return; }
+    const names = new Set<string>();
+    for (const g of Object.values(GUIDES)) for (const p of g.pages) if (p.video) names.add(p.video);
+    for (const name of names) {
+      const file = path.join(ASSETS, name);
+      if (!existsSync(file) || videoIds.has(name)) continue;
+      try {
+        const m = await bot.api.sendVideo(ADMIN, new InputFile(file), { disable_notification: true, supports_streaming: true, caption: '(動画の準備中・自動で消えます)' });
+        if (m.video?.file_id) videoIds.set(name, m.video.file_id);
+        await bot.api.deleteMessage(ADMIN, m.message_id).catch(() => null);
+        console.log('video ready:', name);
+      } catch (e) { console.warn('warmVideos failed', name, String(e)); }
+    }
+  }
+  (bot as any).warmVideos = warmVideos;
   return bot;
 }
 
@@ -160,5 +186,5 @@ if (isMain) {
     { command: 'faq', description: 'よくある質問' },
   ]).catch((e) => console.warn('setMyCommands failed', String(e)));
   console.log('CATCHEEZ support bot starting (AI:', AI_ON ? 'on' : 'off', ', admin:', ADMIN ? 'set' : 'none', ')');
-  bot.start({ onStart: (me) => console.log('polling as @' + me.username) });
+  bot.start({ onStart: (me) => { console.log('polling as @' + me.username); (bot as any).warmVideos().catch(() => null); } });
 }
