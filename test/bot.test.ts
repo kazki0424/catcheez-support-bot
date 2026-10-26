@@ -189,6 +189,25 @@ assert.match(pt, /暗号資産[\s\S]*BTC/);
 const before = hlCalls; await text('/market'); assert.equal(hlCalls, before, 'cached within 45s: no new API calls');
 console.log('ok  market overview + cache');
 
+// 5f. 入金の初心者向け質問
+await text('日本円しか持ってないけど入金できる？');
+assert.match(lastText(), /法定通貨でUSDCを購入/);
+await text('USDTとUSDCって何が違うの');
+assert.match(lastText(), /Circle/); assert.ok(!/価格: <b>/.test(lastText()), 'not a price card');
+await text('ガス代ってなに？ETHいるの？');
+assert.match(lastText(), /ガス代はネットワークの利用料/); assert.ok(!/イーサリアム（ETH）<\/b>/.test(lastText()));
+await text('ソラナで送っちゃったけど届かない');
+assert.match(lastText(), /Arbitrum One|TXID/); assert.ok(!/\$[0-9]/.test(lastText()) || /TXID/.test(lastText()), 'deposit trouble beats SOL price');
+await press('menu:deposit');
+let dp = sent();
+let dkb = dp[0].payload.reply_markup.inline_keyboard.flat();
+assert.ok(dkb.some((b: any) => b.callback_data === 'menu:dep_jpy') && dkb.some((b: any) => b.callback_data === 'menu:dep_ex'), 'deposit page offers branches');
+await press('menu:dep_ex');
+assert.match(lastText(), /Arbitrum One[\s\S]*ETHは不要/);
+await press('menu:dep_words');
+assert.match(lastText(), /TXID/);
+console.log('ok  beginner deposit branches (JPY / exchange / wallet / words)');
+
 // 6. 自由入力: 当たらない & AIなし → 人に聞く案内
 await text('こんにちは、ところで宇宙の広さは？');
 assert.match(lastText(), /担当者/);
