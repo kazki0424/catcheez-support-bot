@@ -93,7 +93,22 @@ await text('手数料っていくら？');
 assert.ok(lastText().includes('手数料'), 'keyword → FAQ answer');
 await text('ログインできない');
 assert.match(lastText(), /ログイン/);
+await text('コピトレって資金預けるの？');
+assert.match(lastText(), /公式コピートレード[\s\S]*FLOW/, 'copy question → explains both kinds');
 console.log('ok  free text → FAQ keyword match');
+
+// 5b. 公式コピトレの案内と、FLOWとの違いページ
+await press('menu:copy');
+let c = sent();
+assert.equal(c.length, GUIDES.copy.pages.length);
+let ck = c[0].payload.reply_markup.inline_keyboard.flat();
+assert.ok(ck.some((b: any) => b.url && b.url.endsWith('/copy')), 'copy guide links to /copy');
+assert.ok(ck.some((b: any) => b.callback_data === 'menu:copyvs'), 'copy guide offers the comparison');
+await press('menu:copyvs');
+assert.match(lastText(), /公式コピートレード[\s\S]*\$101[\s\S]*FLOW[\s\S]*\$500/);
+await text('/copy');
+assert.equal(sent().length, GUIDES.copy.pages.length);
+console.log('ok  official copy guide + comparison with FLOW');
 
 // 6. 自由入力: 当たらない & AIなし → 人に聞く案内
 await text('こんにちは、ところで宇宙の広さは？');
