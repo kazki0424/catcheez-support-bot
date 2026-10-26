@@ -4,6 +4,23 @@ import assert from 'node:assert/strict';
 process.env.ADMIN_CHAT_ID = '999';
 process.env.TELEGRAM_BOT_TOKEN = '123:test';
 delete process.env.ANTHROPIC_API_KEY;
+
+// Hyperliquid の価格APIを偽物に差し替える(ネット不要)
+const mk = (name: string, mark: number, prev: number, vol = 1e6, lev = 20) => ({ u: { name, maxLeverage: lev }, c: { markPx: String(mark), prevDayPx: String(prev), dayNtlVlm: String(vol), openInterest: '1000', funding: '0.0000125' } });
+const MAIN = [mk('BTC', 68250.5, 67000), mk('ETH', 2319.2, 2350), mk('HYPE', 76.44, 76.1), mk('FLOW', 0.31, 0.3)];
+const XYZ = [mk('xyz:NVDA', 184.32, 180.44, 12.3e6), mk('xyz:TSLA', 391.71, 370.2), mk('xyz:KIOXIA', 29065, 28800, 5e5, 10), mk('xyz:JP225', 29059, 29100), mk('xyz:GOLD', 3992.4, 3950, 2e6, 25), mk('xyz:XYZ100', 27995, 28100), mk('xyz:SP500', 7632.5, 7600)];
+let hlCalls = 0;
+globalThis.fetch = (async (url: any, init: any) => {
+  const u = String(url);
+  if (!u.includes('hyperliquid')) throw new Error('unexpected fetch ' + u);
+  hlCalls++;
+  const body = JSON.parse(init.body);
+  const json = (v: any) => ({ ok: true, status: 200, json: async () => v, text: async () => JSON.stringify(v) });
+  if (body.type === 'perpDexs') return json([null, { name: 'xyz', full_name: 'trade.xyz' }]);
+  if (body.type === 'metaAndAssetCtxs') { const rows = body.dex === 'xyz' ? XYZ : MAIN; return json([{ universe: rows.map((r) => r.u) }, rows.map((r) => r.c)]); }
+  throw new Error('unknown info ' + body.type);
+}) as any;
+
 const { makeBot } = await import('../src/index.js');
 const { FAQ, MENU, GUIDES } = await import('../src/content.js');
 
@@ -109,6 +126,66 @@ assert.match(lastText(), /公式コピートレード[\s\S]*\$101[\s\S]*FLOW[\s\
 await text('/copy');
 assert.equal(sent().length, GUIDES.copy.pages.length);
 console.log('ok  official copy guide + comparison with FLOW');
+
+// 5c. 価格: 銘柄名を送ると現在価格と24時間の変化
+await (bot as any).warmPrices();
+assert.ok(hlCalls >= 3, 'dex list + 2 markets loaded');
+await text('NVDAの価格は？');
+let pt = lastText();
+assert.match(pt, /NVDA/); assert.match(pt, /エヌビディア/); assert.match(pt, /\$184\.32/); assert.match(pt, /\+2\.15%/); assert.match(pt, /trade\.xyz/);
+await text('キオクシア 今日どう？');
+pt = lastText(); assert.match(pt, /KIOXIA/); assert.match(pt, /29,065\.00/); assert.match(pt, /\+0\.92%/); assert.match(pt, /10倍/);
+await text('ビットコインいくら？');
+assert.match(lastText(), /BTC[\s\S]*\$68,250\.50/);
+await text('日経とゴールド');
+pt = lastText(); assert.match(pt, /JP225[\s\S]*-0\.14%/); assert.match(pt, /GOLD/);
+await text('/price tsla');
+assert.match(lastText(), /TSLA[\s\S]*\+5\.81%/);
+await text('/price');
+assert.match(lastText(), /銘柄名を送って/);
+await text('入金はどうやる？');
+assert.ok(!/GOLD/.test(lastText()), '「入金」の金はゴールド扱いしない');
+await text('メタマスクで送金できない');
+assert.ok(!/META|GOLD/.test(lastText()), 'メタマスク・送金は銘柄扱いしない');
+await text('NVDAの手数料は？');
+assert.match(lastText(), /手数料/); assert.ok(!/\$184/.test(lastText()), 'FAQ語が強ければFAQ優先');
+await text('FLOWは安全？');
+assert.ok(!/\$0\.31/.test(lastText()), 'FLOW は銘柄扱いしない');
+console.log('ok  price lookups: symbol, Japanese alias, /price, false-positive guards');
+
+// 5e. 企業の説明
+await text('ソフトバンクってどんな会社？');
+pt = lastText();
+assert.match(pt, /ソフトバンクグループ/); assert.match(pt, /投資持株会社/); assert.match(pt, /見つかりませんでした/, '未上場扱い(偽データに無い)');
+await text('テスラについて教えて');
+pt = lastText(); assert.match(pt, /Tesla/); assert.match(pt, /マスク/); assert.match(pt, /いまの価格: <b>\$391\.71/); assert.match(pt, /\+5\.81%/);
+await text('キオクシアとは');
+pt = lastText(); assert.match(pt, /東芝メモリ/); assert.match(pt, /\$29,065/);
+await text('/company 日経');
+assert.match(lastText(), /日経225/);
+await text('NVDA');                     // 説明の意図が無ければ価格
+pt = lastText(); assert.match(pt, /価格: <b>\$184\.32/); assert.ok(!/サンタクララ/.test(pt));
+let kbz = sent()[sent().length - 1].payload.reply_markup.inline_keyboard.flat();
+assert.ok(kbz.some((b: any) => b.callback_data === 'co:NVDA'), 'price card offers company button');
+await press('co:NVDA');
+assert.match(lastText(), /NVIDIA[\s\S]*サンタクララ/);
+kbz = sent()[sent().length - 1].payload.reply_markup.inline_keyboard.flat();
+assert.ok(kbz.some((b: any) => b.callback_data === 'q:NVDA'));
+await press('q:NVDA');
+assert.match(lastText(), /24時間出来高/);
+await text('入金方法を教えて');         // 「教えて」でも企業が無ければ企業説明にならない
+assert.ok(!/🏢/.test(lastText()));
+await text('ミュージックが好き');       // "mu"(マイクロン)の誤反応なし
+assert.ok(!/Micron/.test(lastText()));
+console.log('ok  company explanations (dictionary) + buttons + guards');
+
+// 5d. いまの値動き一覧
+await press('menu:market');
+pt = lastText();
+assert.match(pt, /上昇[\s\S]*TSLA[\s\S]*下落[\s\S]*ETH|上昇[\s\S]*TSLA[\s\S]*下落/);
+assert.match(pt, /暗号資産[\s\S]*BTC/);
+const before = hlCalls; await text('/market'); assert.equal(hlCalls, before, 'cached within 45s: no new API calls');
+console.log('ok  market overview + cache');
 
 // 6. 自由入力: 当たらない & AIなし → 人に聞く案内
 await text('こんにちは、ところで宇宙の広さは？');
