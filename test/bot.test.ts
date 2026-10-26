@@ -40,16 +40,37 @@ assert.equal(kb.length, MENU.length, 'menu buttons');
 assert.ok(kb.every((b: any) => b.callback_data.startsWith('menu:')));
 console.log('ok  /start → menu with', kb.length, 'buttons');
 
-// 2. ログイン案内 (動画つき)
+// 2. ログイン案内 (動画がまだ未アップロード → 文章が先、動画が後)
 await press('menu:login');
 assert.ok(calls.some((c) => c.method === 'answerCallbackQuery'));
-const l = sent();
-assert.equal(l.length, GUIDES.login.pages.length);
-assert.equal(l[0].method, 'sendVideo', 'login guide sends the video');
-assert.ok((l[0].payload.caption as string).includes('ログイン'));
+let l = sent();
+assert.equal(l.length, GUIDES.login.pages.length + 1, 'text + video');
+assert.equal(l[0].method, 'sendMessage');
+assert.ok((l[0].payload.text as string).includes('ログイン'));
 const lk = l[0].payload.reply_markup.inline_keyboard.flat();
 assert.ok(lk.some((b: any) => b.url && b.url.includes('ref=')), 'login button carries the referral link');
-console.log('ok  login guide: video + ref link');
+assert.equal(l[1].method, 'sendVideo');
+assert.ok(typeof l[1].payload.video !== 'string', 'first time uploads the file');
+console.log('ok  login guide (cold): text first, then video upload + ref link');
+
+// 2b. 起動時の事前アップロード → 以後は file_id で一発送信(文章は動画のキャプション)
+bot.api.config.use(async (prev, method, payload) => {
+  if (method === 'sendVideo') { calls.push({ method, payload }); return { ok: true, result: { message_id: 7, date: 0, chat: { id: 999, type: 'private' }, video: { file_id: 'FID_' + (typeof (payload as any).video === 'string' ? (payload as any).video : 'up'), file_unique_id: 'u', width: 1, height: 1, duration: 1 } } } as any; }
+  return prev(method, payload);
+});
+calls.length = 0;
+await (bot as any).warmVideos();
+const warm = calls.filter((c) => c.method === 'sendVideo');
+assert.equal(warm.length, 4, 'four videos pre-uploaded');
+assert.ok(warm.every((c) => String(c.payload.chat_id) === '999' && c.payload.disable_notification === true));
+assert.equal(calls.filter((c) => c.method === 'deleteMessage').length, 4, 'warm-up messages deleted');
+await press('menu:login');
+l = sent();
+assert.equal(l.length, GUIDES.login.pages.length, 'warm: one message per page');
+assert.equal(l[0].method, 'sendVideo');
+assert.equal(l[0].payload.video, 'FID_up', 'sent by file_id, no upload');
+assert.ok((l[0].payload.caption as string).includes('ログイン'));
+console.log('ok  warm-up: videos cached, guide sends by file_id with caption');
 
 // 3. 入金案内は2ページ、最後のページにだけ戻るボタン
 await press('menu:deposit');
