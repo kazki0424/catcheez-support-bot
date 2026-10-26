@@ -108,6 +108,7 @@ export const GUIDES: Record<string, { title: string; pages: GuidePage[] }> = {
           '2. トレーダーを選んで「コピー」\n' +
           '3. 金額(USD)を入れて「確認する」\n' +
           '4. 「ポジション」「履歴」「成績」タブで状況を確認',
+        video: 'copy.mp4',
         buttons: [{ label: 'コピートレードを開く', url: COPY_URL }, { label: 'FLOWとの違い', key: 'copyvs' }],
       },
     ],
