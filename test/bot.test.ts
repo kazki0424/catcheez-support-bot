@@ -78,9 +78,10 @@ bot.api.config.use(async (prev, method, payload) => {
 calls.length = 0;
 await (bot as any).warmVideos();
 const warm = calls.filter((c) => c.method === 'sendVideo');
-assert.equal(warm.length, 4, 'four videos pre-uploaded');
+const nVideos = new Set(Object.values(GUIDES).flatMap((g) => g.pages.map((p) => p.video).filter(Boolean))).size;
+assert.equal(warm.length, nVideos, 'all guide videos pre-uploaded');
 assert.ok(warm.every((c) => String(c.payload.chat_id) === '999' && c.payload.disable_notification === true));
-assert.equal(calls.filter((c) => c.method === 'deleteMessage').length, 4, 'warm-up messages deleted');
+assert.equal(calls.filter((c) => c.method === 'deleteMessage').length, nVideos, 'warm-up messages deleted');
 await press('menu:login');
 l = sent();
 assert.equal(l.length, GUIDES.login.pages.length, 'warm: one message per page');
@@ -117,7 +118,8 @@ console.log('ok  free text → FAQ keyword match');
 // 5b. 公式コピトレの案内と、FLOWとの違いページ
 await press('menu:copy');
 let c = sent();
-assert.equal(c.length, GUIDES.copy.pages.length);
+assert.equal(c.length, GUIDES.copy.pages.length, 'copy guide (video cached) one message per page');
+assert.equal(c[0].method, 'sendVideo', 'copy guide carries the video');
 let ck = c[0].payload.reply_markup.inline_keyboard.flat();
 assert.ok(ck.some((b: any) => b.url && b.url.endsWith('/copy')), 'copy guide links to /copy');
 assert.ok(ck.some((b: any) => b.callback_data === 'menu:copyvs'), 'copy guide offers the comparison');
